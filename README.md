@@ -4,3 +4,6 @@
 
 * Remove the middle jumper (CFG2) from each stepper on the CNC shield to set the TMC2100 to 1/16th microstepping at spreadCycle
 
+* `config.h` needs to be replaced by the provided file to restrict the homing sequence to X axis (sensor on carriage) only
+
+* EEPROM settings for grbl are listed in `grblsettings.txt`

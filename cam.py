@@ -15,11 +15,12 @@ import serial
 import picamera
 
 SCANCAM_DIAMETER        = 100 # exact diameter at endstop position
+SCANCAM_SENSOR_SIZE     = [3.6, 2.7]
 
 SERIAL_BAUDRATE         = 115200
 SERIAL_TIMEOUT_READ     = 0.5
 SERIAL_TIMEOUT_WRITE    = 0.5
-SERIAL_PORT_GRBL        = ["/dev/tty.wchusbserial14210", "/dev/ttyUSB0", "/dev/tty.usbserial-14420"]
+SERIAL_PORT_GRBL        = ["/dev/ttyUSB0", "/dev/tty.wchusbserial14210", "/dev/tty.usbserial-14420"]
 SERIAL_PORT_TRIGGER     = "/dev/ttyAMA0"
 
 FILE_EXTENSION          = ".jpg"
@@ -174,6 +175,33 @@ def close_ports():
         camera.close()
 
 
+def get_positions(diameter, sensor_size):
+
+    # calculate min number of rings without gaps (ceil will introduce necessary overlap)
+    # ring0 is always at center, so subtract half a sensor size
+    num_rings = math.ceil((diameter-sensor_size[1])/2/sensor_size[1])
+    ring_offsets = [x * sensor_size[1] for x in range(0, num_rings)]
+    positions_per_ring = []
+
+    for offset in ring_offsets:
+        if offset == 0:
+            positions_per_ring.append([[0, 0]])
+            continue
+
+        # when computing the circumference do not use the center of the sensor
+        # but the middle of the top border of the sensor (to avoid gaps)
+        circ = 2 * math.pi * (offset + sensor_size[1]/2)
+        num_stops = math.ceil(circ/sensor_size[0])
+
+        stops = []
+        for i in range(0, num_stops):
+            stops.append([offset, (i/num_stops) * 360]) # degree
+
+        positions_per_ring.append(stops)
+
+    return positions_per_ring
+
+
 log = logging.getLogger()
 
 if __name__ == "__main__":
@@ -286,77 +314,55 @@ if __name__ == "__main__":
         steps = []
         step_size = [0, 0, 0]
 
-        
+        positions = get_positions(SCANCAM_DIAMETER, SCANCAM_SENSOR_SIZE)
+        total_pos = math.sum([len(x) for x in positions])
+        num_pos = 0
 
-        if input_shutter <= 1:
-            raise Exception("interval needs to be at least 2")
+        for i in range(0, len(positions)):
 
-        if not args["x"] is None:
-            step_size[0] = float(args["x"])/(input_shutter-1)
+            ring = positions[i]
 
-        if not args["y"] is None:
-            step_size[1] = float(args["y"])/(input_shutter-1)
+            for j in range(0, len(ring))
 
-        for i in range(0, input_shutter+1):
-            steps.append([step_size[0] * i, step_size[1] * i, step_size[2] * i])
-        
-        for i in range(0, input_shutter):
+                pos = ring[j]
+                num_pos += 1
 
-            log.info("INTERVAL {}/{} | X: {:5.2f} Y:{:5.2f} Z:{:5.2f}".format(
-                i+1, input_shutter, *steps[i]))
+                log.info("POS {}/{} | R: {}/{} I:{}/{} ".format(
+                    num_pos, total_pos, 
+                    i, len(positions), 
+                    j, len(ring)
+                ))
 
-            # move
-            cmd = "G1 X{} Y{} Z{} F{}".format(*steps[i], FEEDRATE_SLOW)
-            _send_command(ser_grbl, cmd)
+                # move
+                cmd = "G1 X{} Y{} F{}".format(ring[j][0], ring[j][1], FEEDRATE_SLOW)
+                _send_command(ser_grbl, cmd)
 
-            wait_for_idle()
+                wait_for_idle()
 
-            log.debug("TRIGGER [{}/{}]".format(i+1, input_shutter))
+                log.debug("TRIGGER [{}/{}]".format(num_pos, total_pos))
 
-            # EXT SHUTTER:
+                time.sleep(PRE_CAPTURE_WAIT)
 
-            # # start timer
-            # start = datetime.now()
+                filename = [OUTPUT_DIRECTORY, "{:05}-{:05}-{:05}_{:06.3f}_{:06.3f}{}".format(
+                    num_pos, i, j, s
+                    ring[j][0], ring[j][1],
+                    FILE_EXTENSION
+                )]
 
-            # # trigger
-            # if ser_trigger is not None:
-            #     pass
-            # else:
-            #     raise Exception("shutter not found")
- 
-            # # wait till timer ends
-            # while (datetime.now() - (start + args["delay"])).total_seconds() < 0:
-            #     time.sleep(0.1)
-            #     print("sleep")
+                if filename is None:
+                    raise Exception("could not acquire filename")
 
-            # GPHOTO:
-
-            time.sleep(PRE_CAPTURE_WAIT)
-
-            temp_file = "capt0000{}".format(FILE_EXTENSION)
-            filename = _acquire_filename(OUTPUT_DIRECTORY)
-
-            if filename is None:
-                raise Exception("could not acquire filename")
-
-            if args["picamera"]:
                 camera.capture(os.path.join(*filename))
-            else:
-                subprocess.run("gphoto2 --capture-image-and-download --force-overwrite", shell=True, check=True)
-            
-                if not os.path.exists(temp_file):
-                    raise Exception("captured image file missing")
-                shutil.move(temp_file, os.path.join(*filename))
 
-            log.info("FILE: {}".format(filename[1]))
+                log.info("FILE: {}".format(filename[1]))
 
-            time.sleep(POST_CAPTURE_WAIT)
+                time.sleep(POST_CAPTURE_WAIT)
 
         # return to home
 
         log.info("return home")
 
-        cmd = "G1 X{} Y{} Z{}".format(0, 0, 0)
+        cmd = "G1 X{} Y{}".format(0, 0)
         _send_command(ser_grbl, cmd)
 
         wait_for_idle()
@@ -365,8 +371,8 @@ if __name__ == "__main__":
 
     elif args["command"] == MODE_MOVE:
 
-        pos = [float(args["x"]), float(args["y"]), float(args["z"])]
-        log.info("MOVE | X: {:5.2f} Y:{:5.2f} Z:{:5.2f}".format(*pos))
+        pos = [float(args["x"]), float(args["y"])]
+        log.info("MOVE | X: {:5.2f} Y:{:5.2f}".format(*pos))
 
         cmd = "G1 X{} Y{} Z{} F{}".format(*pos, FEEDRATE)
         _send_command(ser_grbl, cmd)
@@ -387,8 +393,8 @@ if __name__ == "__main__":
 
     elif args["command"] == MODE_VIDEO:
 
-        pos = [float(args["x"]), float(args["y"]), float(args["z"])]
-        log.info("VIDEO | X: {:5.2f} Y:{:5.2f} Z:{:5.2f} F: {}".format(*pos, args["feedrate"]))
+        pos = [float(args["x"]), float(args["y"])]
+        log.info("VIDEO | X: {:5.2f} Y:{:5.2f} F:{}".format(*pos, args["feedrate"]))
 
         cmd = "G1 "
 
@@ -397,9 +403,6 @@ if __name__ == "__main__":
 
         if not args["y"] is None:
             cmd += "Y{}".format(args["y"])
-
-        if not args["z"] is None:
-            cmd += "Z{}".format(args["z"])
 
         cmd += " F{}".format(args["feedrate"]) 
         
@@ -411,8 +414,8 @@ if __name__ == "__main__":
 
     elif args["command"] == MODE_BOUNCE:
 
-        pos = [float(args["x"]), float(args["y"]), float(args["z"])]
-        log.info("BOUNCE | X: {:5.2f} Y:{:5.2f} Z:{:5.2f} F: {}".format(*pos, args["feedrate"]))
+        pos = [float(args["x"]), float(args["y"])]
+        log.info("BOUNCE | X: {:5.2f} Y:{:5.2f} F: {}".format(*pos, args["feedrate"]))
 
         move_cmd = "G1 "
 
@@ -422,12 +425,9 @@ if __name__ == "__main__":
         if not args["y"] is None:
             move_cmd += "Y{}".format(args["y"])
 
-        if not args["z"] is None:
-            move_cmd += "Z{}".format(args["z"])
-
         move_cmd += " F{}".format(args["feedrate"]) 
 
-        cmds = [move_cmd, "G1 X0 Y0 Z0 F{}".format(args["feedrate"])]
+        cmds = [move_cmd, "G1 X0 Y0 F{}".format(args["feedrate"])]
         
         for cmd in cmds:
             _send_command(ser_grbl, cmd)

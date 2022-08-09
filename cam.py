@@ -3,6 +3,7 @@
 import logging
 import argparse
 from datetime import datetime
+import math
 import time
 import os
 import subprocess
@@ -16,6 +17,7 @@ import picamera
 
 SCANCAM_DIAMETER        = 100 # exact diameter at endstop position
 SCANCAM_SENSOR_SIZE     = [3.6, 2.7]
+SCANCAM_ENDSTOP_DIST    = 135
 
 SERIAL_BAUDRATE         = 115200
 SERIAL_TIMEOUT_READ     = 0.5
@@ -26,7 +28,7 @@ SERIAL_PORT_TRIGGER     = "/dev/ttyAMA0"
 FILE_EXTENSION          = ".jpg"
 OUTPUT_DIRECTORY        = "/home/pi/storage"
 
-FEEDRATE                = 2000 
+FEEDRATE                = 1500 
 FEEDRATE_SLOW           = 500
 
 # INTERVAL MODE
@@ -45,7 +47,15 @@ MODE_DISABLE            = "disable"
 SENSOR_MODE             = 0
 EXPOSURE_COMPENSATION   = 0
 
-def _send_command(ser, cmd, param=None):
+def get_status(ser):
+    ret = _send_command(ser, "?")
+
+    # example: <Idle|MPos:17.530,0.000,0.000|FS:0,0|WCO:0.000,0.000,0.000>\r\nok\r
+    ret = ret[ret.index("<")+1:ret.index(">")]
+    return ret.split("|")[0].upper()
+
+
+def _send_command(ser, cmd, param=None, ignore_empty=False):
     response = ""
 
     try:
@@ -64,13 +74,17 @@ def _send_command(ser, cmd, param=None):
         response = response.decode("utf-8") 
 
         # remove every non-alphanumeric / non-underscore / non-space / non-decimalpoint / non-dollarsign character
-        response = re.sub("[^a-zA-Z0-9_ .$]", '', response)
+        # response = re.sub("[^a-zA-Z0-9_ .$]", '', response)
 
         log.debug("serial receive: {}".format(response))
 
         if response is None or len(response) == 0:
             log.debug("empty response".format())
-            raise Exception("empty response or timeout")
+
+            if ignore_empty:
+                return None
+            else:
+                raise Exception("empty response or timeout")
 
         if cmd == "?":
             return response
@@ -88,11 +102,9 @@ def _send_command(ser, cmd, param=None):
             raise Exception("serial error, non ok response: {}".format(response))
 
     except serial.serialutil.SerialException as se:
-        log.error("comm failed, SerialException: {}".format(se))
         raise se
 
     except Exception as e:
-        log.error("comm failed, unknown exception: {}".format(e))
         raise e
 
 
@@ -121,10 +133,9 @@ def global_except_hook(exctype, value, traceback):
 def wait_for_idle():
     while(True):
         try:
-            # example: <Idle|MPos:17.530,0.000,0.000|FS:0,0|WCO:0.000,0.000,0.000>
-            resp = _send_command(ser_grbl, "?")
-
-            if resp.startswith("Idle"):
+            resp = get_status(ser_grbl)
+            print(resp)
+            if resp == "IDLE":
                 break
         except Exception as e:
             log.debug("wait-for-idle loop failed: {}".format(e))
@@ -296,8 +307,26 @@ if __name__ == "__main__":
 
     # GRBL setup
 
+    # start homing
+    try:
+        _send_command(ser_grbl, "$H", ignore_empty=True)
+        wait_for_idle()
+
+        # check for problems during homing. 
+        # resp = _send_command(ser_grbl, "$")
+        # log.info("grbl: {}".format(resp))
+
+        status = get_status(ser_grbl)
+        if status != "IDLE":
+            raise Exception("non IDLE status: {}".format(status))
+        else:
+            log.debug("homing successful")
+
+    except Exception as e:
+        log.error("homing failed: {}".format(e))
+        sys.exit(-1)
+    
     grbl_setup_commands = [
-        # "G91",                      # relative positioning
         "G90",                      # absolute positioning
         "G10 P0 L20 X0 Y0 Z0",      # set current pos as zero
         "G21",                      # set units to millimeters
@@ -305,7 +334,11 @@ if __name__ == "__main__":
     ]
 
     for cmd in grbl_setup_commands:
-        resp = _send_command(ser_grbl, cmd)
+        try:
+            resp = _send_command(ser_grbl, cmd)
+        except Exception as e:
+            log.error("initializing grbl failed with cmd \"{}\": {}".format(cmd, e))
+            sys.exit(-1)
 
     # modes
 
@@ -315,14 +348,37 @@ if __name__ == "__main__":
         step_size = [0, 0, 0]
 
         positions = get_positions(SCANCAM_DIAMETER, SCANCAM_SENSOR_SIZE)
-        total_pos = math.sum([len(x) for x in positions])
+        total_pos = sum([len(x) for x in positions])
         num_pos = 0
+
+
+
+
+
+
+        cmd = "G1 X{} Y{} F{}".format(0, 90, FEEDRATE_SLOW*2)
+        _send_command(ser_grbl, cmd)
+
+        wait_for_idle()
+
+
+        cmd = "G1 X{} Y{} F{}".format(0, -90, FEEDRATE_SLOW*2)
+        _send_command(ser_grbl, cmd)
+
+        wait_for_idle()
+
+        close_ports()
+
+        sys.exit(0)
+
+
+
 
         for i in range(0, len(positions)):
 
             ring = positions[i]
 
-            for j in range(0, len(ring))
+            for j in range(0, len(ring)):
 
                 pos = ring[j]
                 num_pos += 1
@@ -333,8 +389,9 @@ if __name__ == "__main__":
                     j, len(ring)
                 ))
 
-                # move
-                cmd = "G1 X{} Y{} F{}".format(ring[j][0], ring[j][1], FEEDRATE_SLOW)
+                # move (keep in mind that the endstop is 0, positive coordinates pointing away from center. Thus, center is at -SCANCAM_ENDSTOP_DIST)
+
+                cmd = "G1 X{} Y{} F{}".format(SCANCAM_ENDSTOP_DIST-ring[j][0]*-1, ring[j][1], FEEDRATE_SLOW)
                 _send_command(ser_grbl, cmd)
 
                 wait_for_idle()
@@ -344,7 +401,7 @@ if __name__ == "__main__":
                 time.sleep(PRE_CAPTURE_WAIT)
 
                 filename = [OUTPUT_DIRECTORY, "{:05}-{:05}-{:05}_{:06.3f}_{:06.3f}{}".format(
-                    num_pos, i, j, s
+                    num_pos, i, j,
                     ring[j][0], ring[j][1],
                     FILE_EXTENSION
                 )]

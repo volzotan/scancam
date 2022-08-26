@@ -1,1 +1,1 @@
-rsync -av * slider:/home/pi/slider --exclude "storage/*"
+rsync -av * slider:/home/pi/slider --exclude "storage/*" --exclude "output/*" --exclude "input/*"

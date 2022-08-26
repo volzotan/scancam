@@ -15,9 +15,9 @@ from fractions import Fraction
 import serial
 import picamera
 
-SCANCAM_DIAMETER        = 100 # exact diameter at endstop position
+SCANCAM_DIAMETER        = 100 
 SCANCAM_SENSOR_SIZE     = [3.6, 2.7]
-SCANCAM_ENDSTOP_DIST    = 135
+SCANCAM_ENDSTOP_DIST    = 46
 
 SERIAL_BAUDRATE         = 115200
 SERIAL_TIMEOUT_READ     = 0.5
@@ -309,6 +309,7 @@ if __name__ == "__main__":
 
     # start homing
     try:
+        log.debug("starting homing")
         _send_command(ser_grbl, "$H", ignore_empty=True)
         wait_for_idle()
 
@@ -327,10 +328,11 @@ if __name__ == "__main__":
         sys.exit(-1)
     
     grbl_setup_commands = [
-        "G90",                      # absolute positioning
-        "G10 P0 L20 X0 Y0 Z0",      # set current pos as zero
-        "G21",                      # set units to millimeters
-        "G1 F{}".format(FEEDRATE)   # set feedrate to _ mm/min
+        "G90",                                          # absolute positioning
+        "G10 P0 L20 X0 Y0 Z0",                          # set offsets to zero
+        "G21",                                          # set units to millimeters
+        "G1 F{}".format(FEEDRATE),                      # set feedrate to _ mm/min
+        "G92 X{} Y0 Z0".format(SCANCAM_ENDSTOP_DIST)    # set work position
     ]
 
     for cmd in grbl_setup_commands:
@@ -351,28 +353,11 @@ if __name__ == "__main__":
         total_pos = sum([len(x) for x in positions])
         num_pos = 0
 
-
-
-
-
-
-        cmd = "G1 X{} Y{} F{}".format(0, 90, FEEDRATE_SLOW*2)
-        _send_command(ser_grbl, cmd)
-
-        wait_for_idle()
-
-
-        cmd = "G1 X{} Y{} F{}".format(0, -90, FEEDRATE_SLOW*2)
-        _send_command(ser_grbl, cmd)
-
-        wait_for_idle()
-
-        close_ports()
-
-        sys.exit(0)
-
-
-
+        # cmd = "G1 X{} Y{} F{}".format(0, 0, FEEDRATE_SLOW*2)
+        # _send_command(ser_grbl, cmd)
+        # wait_for_idle()
+        # close_ports()
+        # sys.exit(0)
 
         for i in range(0, len(positions)):
 
@@ -389,9 +374,7 @@ if __name__ == "__main__":
                     j, len(ring)
                 ))
 
-                # move (keep in mind that the endstop is 0, positive coordinates pointing away from center. Thus, center is at -SCANCAM_ENDSTOP_DIST)
-
-                cmd = "G1 X{} Y{} F{}".format(SCANCAM_ENDSTOP_DIST-ring[j][0]*-1, ring[j][1], FEEDRATE_SLOW)
+                cmd = "G1 X{} Y{} F{}".format(ring[j][0], ring[j][1], FEEDRATE_SLOW)
                 _send_command(ser_grbl, cmd)
 
                 wait_for_idle()

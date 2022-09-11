@@ -15,9 +15,9 @@ from fractions import Fraction
 import serial
 import picamera
 
-SCANCAM_DIAMETER        = 100 
+SCANCAM_ENDSTOP_DIST    = 37.70
+SCANCAM_DIAMETER        = 60
 SCANCAM_SENSOR_SIZE     = [3.6, 2.7]
-SCANCAM_ENDSTOP_DIST    = 46
 
 SERIAL_BAUDRATE         = 115200
 SERIAL_TIMEOUT_READ     = 0.5
@@ -28,8 +28,10 @@ SERIAL_PORT_TRIGGER     = "/dev/ttyAMA0"
 FILE_EXTENSION          = ".jpg"
 OUTPUT_DIRECTORY        = "/home/pi/storage"
 
-FEEDRATE                = 1500 
-FEEDRATE_SLOW           = 500
+FEEDRATE                = 400 
+
+FEEDRATE_X              = 200
+FEEDRATE_Y              = 500
 
 # INTERVAL MODE
 PRE_CAPTURE_WAIT        = 0.5
@@ -37,9 +39,9 @@ POST_CAPTURE_WAIT       = 0.1
 
 MODE_STILL              = "still"
 MODE_VIDEO              = "video"
-MODE_BOUNCE             = "bounce"
-MODE_MOVE               = "move"
+MODE_MOVE               = "move"        
 MODE_WAIT               = "wait"
+MODE_CALIBRATE          = "calibrate" # move to center and rotate
 MODE_DISABLE            = "disable"
 
 # PICAMERA
@@ -134,7 +136,6 @@ def wait_for_idle():
     while(True):
         try:
             resp = get_status(ser_grbl)
-            print(resp)
             if resp == "IDLE":
                 break
         except Exception as e:
@@ -168,7 +169,8 @@ def init_picamera():
 
     time.sleep(3)
 
-    camera.exposure_mode = "off"
+    # camera.exposure_mode = "off"
+    camera.awb_mode = "off"
 
 
 def close_ports():
@@ -194,7 +196,9 @@ def get_positions(diameter, sensor_size):
     ring_offsets = [x * sensor_size[1] for x in range(0, num_rings)]
     positions_per_ring = []
 
-    for offset in ring_offsets:
+    for i in range(0, len(ring_offsets)):
+        offset = ring_offsets[i]
+
         if offset == 0:
             positions_per_ring.append([[0, 0]])
             continue
@@ -205,10 +209,14 @@ def get_positions(diameter, sensor_size):
         num_stops = math.ceil(circ/sensor_size[0])
 
         stops = []
-        for i in range(0, num_stops):
-            stops.append([offset, (i/num_stops) * 360]) # degree
+        for j in range(0, num_stops):
+            stops.append([offset, (j/num_stops) * 360]) # degree
 
-        positions_per_ring.append(stops)
+        # traverse backwards in every second ring
+        if i % 2 == 0:
+            positions_per_ring.append(stops)
+        else:
+            positions_per_ring.append(list(reversed(stops)))
 
     return positions_per_ring
 
@@ -226,7 +234,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "command",
         default=MODE_STILL,
-        choices=[MODE_STILL, MODE_VIDEO, MODE_BOUNCE, MODE_MOVE, MODE_WAIT, MODE_DISABLE], 
+        choices=[MODE_STILL, MODE_VIDEO, MODE_MOVE, MODE_CALIBRATE, MODE_WAIT, MODE_DISABLE], 
         help=""
     )
 
@@ -234,6 +242,7 @@ if __name__ == "__main__":
     ap.add_argument("-y", type=float, default=0, help="Y axis units [mm]")
     ap.add_argument("-f", "--feedrate", type=int, default=FEEDRATE, help="movement speed [mm/min]")
     ap.add_argument("-d", "--delay", type=int, default=1, help="delay [s]")
+    ap.add_argument("--no-camera", action="store_true", default=False, help="do not initialize picamera")
     ap.add_argument("--debug", action="store_true", default=False, help="print debug messages")
     args = vars(ap.parse_args())
 
@@ -264,6 +273,12 @@ if __name__ == "__main__":
     ser_grbl = None
     ser_trigger = None
 
+    # sanity checks
+
+    if SCANCAM_DIAMETER > (SCANCAM_ENDSTOP_DIST * 2 - 2.0):
+        log.error("SCANCAM_DIAMETER is {}, which is larger than 2x SCANCAM_ENDSTOP_DIST ({}). exiting.".format(SCANCAM_DIAMETER, SCANCAM_ENDSTOP_DIST*2))
+        sys.exit(-1)
+
     for port_name in SERIAL_PORT_GRBL:
         try:
             ser_grbl = serial.Serial(
@@ -280,7 +295,7 @@ if __name__ == "__main__":
         log.error("no grbl found on all ports. exit.")
         sys.exit(-1)
 
-    time.sleep(2.0)
+    time.sleep(1.0)
     response = ser_grbl.read(100) # get rid of init message "Grbl 1.1h ['$' for help]"
 
     if args["command"] == MODE_DISABLE:
@@ -303,13 +318,14 @@ if __name__ == "__main__":
         log.warn("picamera mode enabled, overwriting FILE_EXTENSION to jpg")
         FILE_EXTENSION = ".jpg"
 
-    init_picamera()
+    if not args["no_camera"]:
+        init_picamera()
 
     # GRBL setup
 
     # start homing
     try:
-        log.debug("starting homing")
+        log.info("starting homing")
         _send_command(ser_grbl, "$H", ignore_empty=True)
         wait_for_idle()
 
@@ -317,11 +333,17 @@ if __name__ == "__main__":
         # resp = _send_command(ser_grbl, "$")
         # log.info("grbl: {}".format(resp))
 
+        time.sleep(0.5)
+
         status = get_status(ser_grbl)
+
+        if len(status) == 0: # if empty, repeat
+            status = get_status(ser_grbl)            
+
         if status != "IDLE":
             raise Exception("non IDLE status: {}".format(status))
         else:
-            log.debug("homing successful")
+            log.info("homing successful")
 
     except Exception as e:
         log.error("homing failed: {}".format(e))
@@ -346,10 +368,23 @@ if __name__ == "__main__":
 
     if args["command"] == MODE_STILL: 
 
-        steps = []
-        step_size = [0, 0, 0]
+        log.info("STILL MODE")
 
-        positions = get_positions(SCANCAM_DIAMETER, SCANCAM_SENSOR_SIZE)
+        positions = get_positions(
+            SCANCAM_DIAMETER, 
+            [SCANCAM_SENSOR_SIZE[0]-0.1, SCANCAM_SENSOR_SIZE[1]-0.1] # create a bit of overlap
+        )
+
+        # debug pattern
+        # positions = [[[0, 0]]]
+        # for i in range(1, 10):
+        #     positions.append([
+        #         [1*i, 0],        
+        #         [1*i, 90],
+        #         [1*i, 180],
+        #         [1*i, 270],
+        #     ])
+
         total_pos = sum([len(x) for x in positions])
         num_pos = 0
 
@@ -374,7 +409,14 @@ if __name__ == "__main__":
                     j, len(ring)
                 ))
 
-                cmd = "G1 X{} Y{} F{}".format(ring[j][0], ring[j][1], FEEDRATE_SLOW)
+                # separate movement commands for X and Y so we can have different feedrates
+
+                cmd = "G1 X{} F{}".format(ring[j][0], FEEDRATE_X)
+                _send_command(ser_grbl, cmd)
+
+                wait_for_idle()
+
+                cmd = "G1 Y{} F{}".format(ring[j][1], FEEDRATE_Y)
                 _send_command(ser_grbl, cmd)
 
                 wait_for_idle()
@@ -394,9 +436,72 @@ if __name__ == "__main__":
 
                 camera.capture(os.path.join(*filename))
 
-                log.info("FILE: {}".format(filename[1]))
+                log.debug("FILE: {}".format(filename[1]))
 
                 time.sleep(POST_CAPTURE_WAIT)
+
+        # return to home
+
+        log.info("return home")
+
+        cmd = "G1 X{} Y{}".format(0, 0)
+        _send_command(ser_grbl, cmd)
+
+        wait_for_idle()
+
+        log.info("DONE")
+
+    elif args["command"] == MODE_CALIBRATE: 
+
+        log.info("CALIBRATE MODE")
+
+        positions = [
+            [0, 0],
+            [0, 22.5],
+            [0, 45],
+            [0, 67.5],
+            [0, 90],
+            [0, 112.5],
+            [0, 135],
+            [0, 157.5],
+            [0, 180]
+        ]
+
+        for i in range(0, len(positions)):
+
+            log.info("POS {}/{}".format(i, len(positions)))
+
+            pos = positions[i]
+
+            cmd = "G1 X{} F{}".format(pos[0], FEEDRATE_X)
+            _send_command(ser_grbl, cmd)
+
+            wait_for_idle()
+
+            cmd = "G1 Y{} F{}".format(pos[1], FEEDRATE_Y)
+            _send_command(ser_grbl, cmd)
+
+            wait_for_idle()
+
+            log.debug("TRIGGER [{}/{}]".format(i, len(positions)))
+
+            time.sleep(PRE_CAPTURE_WAIT)
+
+            filename = [OUTPUT_DIRECTORY, "calibrate_{:06.2f}_{:05}_{:06.3f}_{:06.3f}{}".format(
+                SCANCAM_ENDSTOP_DIST,
+                i,
+                pos[0], pos[1],
+                FILE_EXTENSION
+            )]
+
+            if filename is None:
+                raise Exception("could not acquire filename")
+
+            camera.capture(os.path.join(*filename))
+
+            log.debug("FILE: {}".format(filename[1]))
+
+            time.sleep(POST_CAPTURE_WAIT)
 
         # return to home
 
@@ -414,7 +519,7 @@ if __name__ == "__main__":
         pos = [float(args["x"]), float(args["y"])]
         log.info("MOVE | X: {:5.2f} Y:{:5.2f}".format(*pos))
 
-        cmd = "G1 X{} Y{} Z{} F{}".format(*pos, FEEDRATE)
+        cmd = "G1 X{} Y{} F{}".format(*pos, FEEDRATE)
         _send_command(ser_grbl, cmd)
 
         wait_for_idle()

@@ -1,5 +1,6 @@
 import os
 import math
+import sys
 
 from PIL import Image, ImageDraw
 import cv2
@@ -53,6 +54,10 @@ def get_rotated_sensor(offset, angle, sensor_size, center=[0, 0]):
     return points
 
 if __name__ == "__main__":
+
+    if len(sys.argv) > 1:
+        INPUT_DIR = sys.argv[1]
+        print("INPUT_DIR: {}".format(INPUT_DIR))
 
     for (dirpath, dirnames, filenames) in os.walk(INPUT_DIR):
         for f in filenames:
@@ -133,5 +138,5 @@ if __name__ == "__main__":
 
         output_image.save("output.png", "PNG")
 
-        img_gray = cv2.cvtColor(img_out, cv2.COLOR_BGR2GRAY)
-        cv2.imwrite(os.path.join(OUTPUT_DIR, "output.png"), img_gray)
+        # img_out = cv2.cvtColor(img_out, cv2.COLOR_BGR2GRAY)
+        cv2.imwrite(os.path.join(OUTPUT_DIR, "output.png"), img_out)

@@ -30,7 +30,7 @@ OUTPUT_DIRECTORY        = "/home/pi/storage"
 
 FEEDRATE                = 400 
 
-FEEDRATE_X              = 200
+FEEDRATE_X              = 150
 FEEDRATE_Y              = 500
 
 # INTERVAL MODE
@@ -167,10 +167,11 @@ def init_picamera():
 
     camera.start_preview()
 
-    time.sleep(3)
+    time.sleep(5)
 
     # camera.exposure_mode = "off"
-    camera.awb_mode = "off"
+    # camera.awb_mode = "off"
+    camera.awb_mode = "sunlight"
 
 
 def close_ports():
@@ -318,9 +319,6 @@ if __name__ == "__main__":
         log.warn("picamera mode enabled, overwriting FILE_EXTENSION to jpg")
         FILE_EXTENSION = ".jpg"
 
-    if not args["no_camera"]:
-        init_picamera()
-
     # GRBL setup
 
     # start homing
@@ -354,7 +352,9 @@ if __name__ == "__main__":
         "G10 P0 L20 X0 Y0 Z0",                          # set offsets to zero
         "G21",                                          # set units to millimeters
         "G1 F{}".format(FEEDRATE),                      # set feedrate to _ mm/min
-        "G92 X{} Y0 Z0".format(SCANCAM_ENDSTOP_DIST)    # set work position
+        "G92 X{} Y0 Z0".format(SCANCAM_ENDSTOP_DIST),   # set work position
+        "G1 X0 F{}".format(FEEDRATE_X),                 # move to center
+        "G1 Y0 F{}".format(FEEDRATE_Y)                  # move to center
     ]
 
     for cmd in grbl_setup_commands:
@@ -363,6 +363,15 @@ if __name__ == "__main__":
         except Exception as e:
             log.error("initializing grbl failed with cmd \"{}\": {}".format(cmd, e))
             sys.exit(-1)
+
+    wait_for_idle()
+
+    log.info("initialized and centered")
+
+    # once the carriage is homes, initalize picamera
+
+    if not args["no_camera"]:
+        init_picamera()
 
     # modes
 

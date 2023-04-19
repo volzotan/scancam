@@ -1,3 +1,10 @@
+A scanning camera in a giant sewer pipe. A Raspberry Pi camera module without lens is rotated and shifted to cover a 200mm disk. At each position a photo is taken and stitched to a giant image afterwards. Code is functional, hardware works, example images are ... well, not beautiful. On hold for now but might get around to finish this project at some point in the future.
+
+![sewage pipe camera](media/camera.jpg)
+![example image](media/example_output.png)
+
+My design is based on the [Lafodis160](http://aggregate.org/DIT/iss070.pdf) an ESP-32 scanning camera by [Henry Dietz and Paul Eberhart](http://aggregate.org).
+
 # flashing GRBL
 
 * The cheap "CNC engraver shield" is not pin-compatible to the standard CNC shield, the STEP and DIR pins for all three axes are switched. Overwrite `pin_map.h` to deal with that. Cheap Arduino Nano clones may need the `AtMega3288P (Old Bootloader)` processor setting in the Arduino IDE, otherwise flashing will fail.
